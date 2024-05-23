@@ -1,6 +1,9 @@
 /// VERTEX SHADER
 /// =============
 
+@group(0) @binding(0) // 1.
+var<uniform> u_projection: mat4x4<f32>;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
 };
@@ -38,7 +41,7 @@ fn vs_main(
     let coords = get_rectangle_vertex_coordinates(in_vertex_index);
 
     var out: VertexOutput;
-    out.position = vec4<f32>(coords.x, coords.y, 0.0, 1.0);
+    out.position = u_projection *  vec4<f32>(coords.x*100+200, coords.y*100+200, 0.0, 1.0);
     return out;
 }
 
