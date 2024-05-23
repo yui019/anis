@@ -1,7 +1,7 @@
 /// VERTEX SHADER
 /// =============
 
-@group(0) @binding(0) // 1.
+@group(0) @binding(0)
 var<uniform> u_projection: mat4x4<f32>;
 
 struct VertexOutput {
