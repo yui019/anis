@@ -52,8 +52,12 @@ pub struct Texture {
 pub struct RectangleDrawData {
     pub pos: [f32; 2],
     pub size: [f32; 2],
+
     pub color: [f32; 3],
-    pub _padding: [u8; 4],
+
+    // This is used to index into the array of textures. If it's -1, that means
+    // it's a colored rectangle
+    pub texture_index: i32,
 }
 
 impl<'a> Context<'a> {
@@ -327,19 +331,19 @@ impl<'a> Context<'a> {
                     pos: [10.0, 10.0],
                     size: [100.0, 100.0],
                     color: [1.0, 1.0, 1.0],
-                    _padding: [0, 0, 0, 0],
+                    texture_index: -1,
                 },
                 RectangleDrawData {
                     pos: [120.0, 20.0],
                     size: [100.0, 100.0],
-                    color: [1.0, 0.5, 1.0],
-                    _padding: [0, 0, 0, 0],
+                    color: [0.0, 0.0, 0.0],
+                    texture_index: 0,
                 },
                 RectangleDrawData {
                     pos: [230.0, 50.0],
                     size: [100.0, 150.0],
                     color: [0.4, 0.3, 0.3],
-                    _padding: [0, 0, 0, 0],
+                    texture_index: -1,
                 },
             ],
             rectangles_buffer,

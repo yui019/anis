@@ -5,6 +5,7 @@ struct RectangleDrawData {
     pos: vec2<f32>,
     size: vec2<f32>,
     color: vec3<f32>,
+    texture_index: i32
 }
 
 @group(0) @binding(0)
@@ -21,7 +22,9 @@ var texture_array: binding_array<texture_2d<f32>>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>
+    @location(0) uv: vec2<f32>,
+    @location(1) texture_index: i32,
+    @location(2) color: vec3<f32>,
 };
 
 fn choose_vertex_corner(
@@ -108,6 +111,9 @@ fn vs_main(
 
     out.uv = get_vertex_uv_coordinates(in_vertex_index % 6);
 
+    out.texture_index = rectangle.texture_index;
+    out.color = rectangle.color;
+
     return out;
 }
 
@@ -116,5 +122,9 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(texture_array[0], texture_sampler, in.uv);
+    if in.texture_index == -1 {
+        return vec4<f32>(in.color, 1.0);
+    } else {
+        return textureSample(texture_array[0], texture_sampler, in.uv);
+    }
 }
