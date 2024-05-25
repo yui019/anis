@@ -19,9 +19,23 @@ pub struct Context<'a> {
     pub size: winit::dpi::PhysicalSize<u32>,
     pub render_pipeline: wgpu::RenderPipeline,
     pub window: &'a Window,
+
     pub projection_matrix_bytes: [u8; 64],
     pub projection_buffer: Buffer,
-    pub projection_bind_group: BindGroup,
+
+    pub rectangles_to_render: Vec<RectangleDrawData>,
+    pub rectangles_buffer: Buffer,
+
+    pub uniform_bind_group: BindGroup,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::NoUninit)]
+pub struct RectangleDrawData {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub color: [f32; 3],
+    pub _padding: [u8; 4],
 }
 
 impl<'a> Context<'a> {
@@ -94,29 +108,56 @@ impl<'a> Context<'a> {
                     | wgpu::BufferUsages::COPY_DST,
             });
 
-        let projection_bind_group_layout =
+        let rectangles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Rectangles Buffer"),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            size: 10000 * std::mem::size_of::<RectangleDrawData>() as u64,
+            mapped_at_creation: false,
+        });
+
+        let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
-                label: Some("Projection bind group layout"),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage {
+                                read_only: true,
+                            },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("Uniform bind group layout"),
             });
 
-        let projection_bind_group =
+        let uniform_bind_group =
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &projection_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: projection_buffer.as_entire_binding(),
-                }],
-                label: Some("Projection bind group"),
+                layout: &uniform_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: projection_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: rectangles_buffer.as_entire_binding(),
+                    },
+                ],
+                label: Some("Uniform bind group"),
             });
 
         // PIPELINE
@@ -133,7 +174,7 @@ impl<'a> Context<'a> {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&projection_bind_group_layout],
+                bind_group_layouts: &[&uniform_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -189,7 +230,28 @@ impl<'a> Context<'a> {
             window,
             projection_matrix_bytes,
             projection_buffer,
-            projection_bind_group,
+            rectangles_to_render: vec![
+                RectangleDrawData {
+                    pos: [10.0, 10.0],
+                    size: [100.0, 100.0],
+                    color: [1.0, 1.0, 1.0],
+                    _padding: [0, 0, 0, 0],
+                },
+                RectangleDrawData {
+                    pos: [120.0, 20.0],
+                    size: [100.0, 100.0],
+                    color: [1.0, 0.5, 1.0],
+                    _padding: [0, 0, 0, 0],
+                },
+                RectangleDrawData {
+                    pos: [230.0, 50.0],
+                    size: [100.0, 150.0],
+                    color: [0.4, 0.3, 0.3],
+                    _padding: [0, 0, 0, 0],
+                },
+            ],
+            rectangles_buffer,
+            uniform_bind_group,
         }
     }
 
@@ -235,6 +297,12 @@ impl<'a> Context<'a> {
             },
         );
 
+        self.queue.write_buffer(
+            &self.rectangles_buffer,
+            0,
+            bytemuck::cast_slice(self.rectangles_to_render.as_slice()),
+        );
+
         {
             let mut render_pass =
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -260,9 +328,10 @@ impl<'a> Context<'a> {
                 });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.projection_bind_group, &[]);
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
 
-            render_pass.draw(0..6, 0..1);
+            let vertex_count = 6 * self.rectangles_to_render.len() as u32;
+            render_pass.draw(0..vertex_count, 0..1);
         }
 
         self.queue.submit(iter::once(encoder.finish()));
