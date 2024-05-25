@@ -1,9 +1,7 @@
 use std::{iter, num::NonZeroU32};
 
 use image::{DynamicImage, GenericImageView};
-use wgpu::{
-    util::DeviceExt, BindGroup, BindGroupLayout, Buffer, Sampler, TextureView,
-};
+use wgpu::{util::DeviceExt, BindGroup, BindGroupLayout, Buffer, Sampler};
 use winit::window::Window;
 
 #[rustfmt::skip]
@@ -452,13 +450,14 @@ impl<'a> Context<'a> {
         // UPDATE BIND GROUP
         // =================
 
-        let mut texture_views: Vec<&wgpu::TextureView> = vec![];
+        let mut texture_views: Vec<&wgpu::TextureView> =
+            Vec::with_capacity(1000);
         for texture in self.textures.iter() {
             texture_views.push(&texture.wgpu_texture_view);
         }
 
         // fill the rest with an empty texture view
-        for i in texture_views.len()..1000 {
+        for _ in texture_views.len()..1000 {
             texture_views.push(&self.empty_texture.wgpu_texture_view)
         }
 
