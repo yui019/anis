@@ -80,6 +80,7 @@ pub fn run() {
         .unwrap();
 
     let mut context = Context::new(&window);
+    context.create_texture_from_path("res/one.png").unwrap();
 
     event_loop.run_app(&mut context).unwrap();
 }

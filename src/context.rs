@@ -1,6 +1,9 @@
-use std::iter;
+use std::{iter, num::NonZeroU32};
 
-use wgpu::{util::DeviceExt, BindGroup, Buffer};
+use image::{DynamicImage, GenericImageView};
+use wgpu::{
+    util::DeviceExt, BindGroup, BindGroupLayout, Buffer, Sampler, TextureView,
+};
 use winit::window::Window;
 
 #[rustfmt::skip]
@@ -27,6 +30,23 @@ pub struct Context<'a> {
     pub rectangles_buffer: Buffer,
 
     pub uniform_bind_group: BindGroup,
+
+    // this bind group is recreated each time a texture is added, so it's
+    // easier to also store the layout here
+    pub textures_bind_group_layout: BindGroupLayout,
+    pub textures_bind_group: BindGroup,
+
+    pub sampler: Sampler,
+    pub empty_texture: Texture, /* used to fill in the empty entries in
+                                 * textures_bind_group */
+    pub textures: Vec<Texture>,
+}
+
+pub type TextureHandle = usize;
+
+pub struct Texture {
+    pub wgpu_texture: wgpu::Texture,
+    pub wgpu_texture_view: wgpu::TextureView,
 }
 
 #[repr(C)]
@@ -61,11 +81,13 @@ impl<'a> Context<'a> {
         ))
         .unwrap();
 
+        let mut required_limits = wgpu::Limits::default();
+        required_limits.max_sampled_textures_per_shader_stage = 1000;
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_features: wgpu::Features::TEXTURE_BINDING_ARRAY,
+                required_limits,
             },
             None,
         ))
@@ -92,6 +114,28 @@ impl<'a> Context<'a> {
             desired_maximum_frame_latency: 2,
         };
 
+        // TEXTURES
+        // ========
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // start with 0 textures
+        let textures: Vec<Texture> = vec![];
+
+        let empty_texture = create_texture_from_raw_data(
+            &device,
+            &queue,
+            &DynamicImage::new(1, 1, image::ColorType::Rgba8),
+        );
+
         // BUFFERS
         // =======
 
@@ -114,6 +158,9 @@ impl<'a> Context<'a> {
             size: 10000 * std::mem::size_of::<RectangleDrawData>() as u64,
             mapped_at_creation: false,
         });
+
+        // UNIFORM BIND GROUP
+        // ==================
 
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -140,6 +187,14 @@ impl<'a> Context<'a> {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(
+                            wgpu::SamplerBindingType::Filtering,
+                        ),
+                        count: None,
+                    },
                 ],
                 label: Some("Uniform bind group layout"),
             });
@@ -156,8 +211,44 @@ impl<'a> Context<'a> {
                         binding: 1,
                         resource: rectangles_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
                 ],
                 label: Some("Uniform bind group"),
+            });
+
+        // TEXTURES BIND GROUP
+        // ===================
+
+        let textures_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float {
+                            filterable: true,
+                        },
+                    },
+                    count: NonZeroU32::new(1000),
+                }],
+                label: Some("Textures bind group layout"),
+            });
+
+        let textures_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &textures_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(
+                        &[&empty_texture.wgpu_texture_view; 1000],
+                    ),
+                }],
+                label: Some("Textures bind group"),
             });
 
         // PIPELINE
@@ -174,7 +265,10 @@ impl<'a> Context<'a> {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&uniform_bind_group_layout],
+                bind_group_layouts: &[
+                    &uniform_bind_group_layout,
+                    &textures_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -252,6 +346,11 @@ impl<'a> Context<'a> {
             ],
             rectangles_buffer,
             uniform_bind_group,
+            textures_bind_group_layout,
+            textures_bind_group,
+            sampler,
+            empty_texture,
+            textures,
         }
     }
 
@@ -329,6 +428,7 @@ impl<'a> Context<'a> {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.textures_bind_group, &[]);
 
             let vertex_count = 6 * self.rectangles_to_render.len() as u32;
             render_pass.draw(0..vertex_count, 0..1);
@@ -338,6 +438,66 @@ impl<'a> Context<'a> {
         output.present();
 
         Ok(())
+    }
+
+    pub fn create_texture_from_raw_data(
+        &mut self,
+        data: &DynamicImage,
+    ) -> Result<TextureHandle, &str> {
+        let texture =
+            create_texture_from_raw_data(&self.device, &self.queue, data);
+
+        self.textures.push(texture);
+
+        // UPDATE BIND GROUP
+        // =================
+
+        let mut texture_views: Vec<&wgpu::TextureView> = vec![];
+        for texture in self.textures.iter() {
+            texture_views.push(&texture.wgpu_texture_view);
+        }
+
+        // fill the rest with an empty texture view
+        for i in texture_views.len()..1000 {
+            texture_views.push(&self.empty_texture.wgpu_texture_view)
+        }
+
+        self.textures_bind_group =
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.textures_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(
+                        &texture_views,
+                    ),
+                }],
+                label: Some("Textures bind group"),
+            });
+
+        // return index of the added texture
+        Ok(self.textures.len() - 1)
+    }
+
+    pub fn create_texture_from_path(
+        &mut self,
+        path: &str,
+    ) -> Result<TextureHandle, &str> {
+        // LOAD IMAGE DATA
+        // ===============
+
+        let img = image::io::Reader::open(path);
+        if img.is_err() {
+            return Err("Could not open file.");
+        }
+        let img = img.unwrap();
+
+        let decoded_img = img.decode();
+        if decoded_img.is_err() {
+            return Err("Could not decode image data.");
+        }
+        let decoded_img = decoded_img.unwrap();
+
+        return self.create_texture_from_raw_data(&decoded_img);
     }
 
     fn calculate_projection_matrix(
@@ -354,4 +514,60 @@ impl<'a> Context<'a> {
             std::mem::transmute::<[[f32; 4]; 4], [u8; 64]>(matrix_transformed)
         }
     }
+}
+
+pub fn create_texture_from_raw_data(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    data: &DynamicImage,
+) -> Texture {
+    let rgba = data.to_rgba8();
+    let dimensions = data.dimensions();
+
+    // CREATE WGPU TEXTURE
+    // ===================
+
+    let texture_size = wgpu::Extent3d {
+        width: dimensions.0,
+        height: dimensions.1,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        size: texture_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
+        label: Some("Texture created from raw data"),
+        view_formats: &[],
+    });
+
+    // WRITE TO WGPU TEXTURE
+    // =====================
+
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * dimensions.0),
+            rows_per_image: Some(dimensions.1),
+        },
+        texture_size,
+    );
+
+    let texture_view =
+        texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    return Texture {
+        wgpu_texture: texture,
+        wgpu_texture_view: texture_view,
+    };
 }
